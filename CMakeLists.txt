@@ -27,7 +27,14 @@ option(
 
 set(CMAKE_VERIFY_INTERFACE_HEADER_SETS ON)
 
-find_package(beman.execution REQUIRED)
+# beman.execution is vendored under vendored/ as a squashed git subtree (we do
+# not modify or upstream it). Build it from source as a nested project rather
+# than resolving an external package, so no network/lockfile fetch is needed.
+# Consume it headers-only: modules off, and its own tests/examples disabled.
+set(BEMAN_USE_MODULES OFF CACHE BOOL "callcc consumes beman.execution as headers" FORCE)
+set(BEMAN_EXECUTION_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+set(BEMAN_EXECUTION_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+add_subdirectory(vendored/beman.execution)
 
 # Header-only facade library (the Metaprogramming Firewall).
 add_library(callcc.callcc INTERFACE)
