@@ -1,7 +1,7 @@
 # example/CMakeLists.txt                                            -*-cmake-*-
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-cmake_minimum_required(VERSION 4.0..4.2)
+cmake_minimum_required(VERSION 4.3)
 
 project(callcc VERSION 0.0.0 LANGUAGES CXX)
 
@@ -27,27 +27,22 @@ option(
 
 set(CMAKE_VERIFY_INTERFACE_HEADER_SETS ON)
 
-# Create the library target and named header set for beman.optional
-add_library(callcc.callcc STATIC "")
+find_package(beman.execution REQUIRED)
+
+# Header-only facade library (the Metaprogramming Firewall).
+add_library(callcc.callcc INTERFACE)
 
 target_sources(
     callcc.callcc
-    PUBLIC FILE_SET callcc_callcc_headers TYPE HEADERS BASE_DIRS src
+    INTERFACE FILE_SET callcc_callcc_headers TYPE HEADERS BASE_DIRS src
 )
 
+target_link_libraries(callcc.callcc INTERFACE beman::execution_headers)
+target_compile_features(callcc.callcc INTERFACE cxx_std_23)
+
 if(CALLCC_ENABLE_TESTING)
-    find_package(GTest QUIET)
-    if(GTest_FOUND)
-        include(GoogleTest)
-    else()
-        message(
-            WARNING
-            "
-No provider for GTest. Unable to build tests.
-Consider using CMAKE_PROJECT_TOP_LEVEL_INCLUDES=./cmake/use-fetch-content.cmake as documented in the README.md
-"
-        )
-    endif()
+    find_package(Catch2 3 REQUIRED)
+    include(Catch)
 endif()
 
 add_subdirectory(src)
