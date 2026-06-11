@@ -113,26 +113,11 @@ struct escape_factory {
 // ---------------------------------------------------------------------------
 // Inner receiver — intercepts the non-escaped completion of the user's inner
 // computation, forwarding it to the shared state, and injects the local stop
-// token into the environment seen by the inner sender.
+// token into the environment seen by the inner sender. The environment is
+// composed from beman's own env utilities (the pattern beman's let adaptor
+// uses): a prop overriding get_stop_token with the local inplace_stop_token,
+// joined over a forwarding view of the outer environment.
 // ---------------------------------------------------------------------------
-template <class SharedState, class OuterEnv>
-struct inner_env {
-    SharedState* shared_state;
-    OuterEnv     outer_env;
-
-    auto query(ex::get_stop_token_t) const noexcept -> ex::inplace_stop_token {
-        return shared_state->stop_source.get_token();
-    }
-
-    template <class Query>
-        requires std::is_invocable_v<Query, const OuterEnv&> &&
-                 (!std::is_same_v<Query, ex::get_stop_token_t>)
-    auto query(Query q) const noexcept
-        -> std::invoke_result_t<Query, const OuterEnv&> {
-        return q(outer_env);
-    }
-};
-
 template <class SharedState>
 struct inner_receiver {
     using receiver_concept = ex::receiver_tag;
@@ -152,9 +137,9 @@ struct inner_receiver {
     void set_stopped() && noexcept { shared_state->complete_stopped(); }
 
     auto get_env() const noexcept {
-        return inner_env<SharedState,
-                         ex::env_of_t<decltype(shared_state->outer_receiver)>>{
-            shared_state, ex::get_env(shared_state->outer_receiver)};
+        return ex::detail::join_env(
+            ex::prop{ex::get_stop_token, shared_state->stop_source.get_token()},
+            ex::detail::fwd_env(ex::get_env(shared_state->outer_receiver)));
     }
 };
 
