@@ -175,8 +175,13 @@ struct call_cc_op_state {
     using InnerReceiverType = inner_receiver<SharedStateType>;
     using InnerOpStateType  = ex::connect_result_t<InnerSenderType, InnerReceiverType>;
 
-    SharedStateType shared_state;
-    F               user_func;
+    using OuterStopToken = decltype(ex::get_stop_token(
+        ex::get_env(std::declval<const OuterReceiver&>())));
+    using StopCallback   = ex::stop_callback_for_t<OuterStopToken, std::function<void()>>;
+
+    SharedStateType             shared_state;
+    F                           user_func;
+    std::optional<StopCallback> stop_callback;
 
     union inner_storage_t {
         inner_storage_t() {}
@@ -201,6 +206,16 @@ struct call_cc_op_state {
     }
 
     void start() & noexcept {
+        // Upward cancellation: if the outer token is triggered, request stop on
+        // our local source so the inner work is cancelled. Registered before
+        // the inner op starts; if the outer token is already stopped the
+        // callback fires immediately here.
+        auto outer_token =
+            ex::get_stop_token(ex::get_env(shared_state.outer_receiver));
+        stop_callback.emplace(outer_token, [this]() {
+            shared_state.stop_source.request_stop();
+        });
+
         escape_factory<SharedStateType, ValueType> factory{&shared_state};
         ::new (&inner_storage.op) InnerOpStateType(
             ex::connect(user_func(factory), InnerReceiverType{&shared_state}));
