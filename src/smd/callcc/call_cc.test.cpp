@@ -136,13 +136,21 @@ TEST_CASE("call_cc escape completes outer with escaped value", "[callcc][escape]
     REQUIRE(v == 99);
 }
 
-TEST_CASE("call_cc forwards inner errors", "[callcc][error]") {
+TEST_CASE("call_cc forwards inner errors with identity", "[callcc][error]") {
     auto work = smd::call_cc<int>([](auto /*escape*/) {
         return ex::just(0) | ex::then([](int) -> int {
                    throw std::runtime_error{"boom"};
                });
     });
-    REQUIRE_THROWS_AS(ex::sync_wait(std::move(work)), std::runtime_error);
+    bool errored = false;
+    try {
+        ex::sync_wait(std::move(work));
+        FAIL("expected sync_wait to throw");
+    } catch (const std::runtime_error& e) {
+        errored = true;
+        REQUIRE(std::string{e.what()} == "boom");  // the inner error, not a stray one
+    }
+    REQUIRE(errored);
 }
 
 TEST_CASE("call_cc reports a throwing factory via set_error (no terminate)", "[callcc][error]") {
