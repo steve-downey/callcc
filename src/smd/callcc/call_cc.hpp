@@ -265,11 +265,25 @@ struct call_cc_sender {
 
     F user_func;
 
+    // The block's completions are derived from the inner sender (seen through
+    // the local stop-token environment), unioned with set_value_t(ValueType)
+    // for escape delivery and set_error_t(exception_ptr) for a throwing
+    // factory/connect.
     template <typename, typename... Env>
     static consteval auto get_completion_signatures() noexcept {
-        return ex::completion_signatures<ex::set_value_t(ValueType),
-                                         ex::set_error_t(std::exception_ptr),
-                                         ex::set_stopped_t()>{};
+        using inner_sender = std::invoke_result_t<F&, escape_factory<ValueType>>;
+        using extra = ex::completion_signatures<ex::set_value_t(ValueType),
+                                                ex::set_error_t(std::exception_ptr)>;
+        if constexpr (sizeof...(Env) == 0) {
+            using inner_sigs = ex::completion_signatures_of_t<inner_sender>;
+            return ex::detail::meta::unique<
+                ex::detail::meta::combine<inner_sigs, extra>>{};
+        } else {
+            using inner_sigs =
+                ex::completion_signatures_of_t<inner_sender, inner_env_t<Env>...>;
+            return ex::detail::meta::unique<
+                ex::detail::meta::combine<inner_sigs, extra>>{};
+        }
     }
 
     template <ex::receiver OuterReceiver>
