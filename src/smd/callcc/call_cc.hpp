@@ -26,97 +26,121 @@ namespace ex = ::beman::execution;
 namespace callcc_detail {
 
 // ---------------------------------------------------------------------------
+// Escape sink — a tiny interface type-erased on ValueType only (not on the
+// outer receiver). This lets escape_factory/escape_sender depend solely on
+// ValueType, so call_cc_sender can name the inner sender type (and thus derive
+// its completion signatures) without knowing the outer receiver.
+// ---------------------------------------------------------------------------
+template <class ValueType>
+struct escape_sink {
+    virtual void do_escape(ValueType) noexcept = 0;
+
+  protected:
+    ~escape_sink() = default;
+};
+
+// ---------------------------------------------------------------------------
 // Shared state — the synchronization node of a call_cc block. Holds the outer
-// receiver, an inplace_stop_source for downward cancellation, and an atomic
-// completed flag enforcing the exactly-one-completion rule.
+// receiver and an inplace_stop_source for downward cancellation. It does NOT
+// complete the outer receiver on escape; instead an escape stashes its value
+// here and requests stop, and the *inner operation's single completion* is the
+// sole point that completes the outer receiver (drain-then-complete). This
+// guarantees no inner work is still in flight when the outer completes.
 // ---------------------------------------------------------------------------
 template <class OuterReceiver, class ValueType>
-struct call_cc_shared_state {
-    OuterReceiver           outer_receiver;
-    ex::inplace_stop_source stop_source;
-    std::atomic<bool>       completed{false};
+struct call_cc_shared_state : escape_sink<ValueType> {
+    OuterReceiver            outer_receiver;
+    ex::inplace_stop_source  stop_source;
+    std::atomic<bool>        escape_claimed{false};  // one-shot winner latch
+    std::atomic<bool>        escaped{false};         // publishes escape_value
+    std::optional<ValueType> escape_value;
 
     explicit call_cc_shared_state(OuterReceiver&& rcvr)
         : outer_receiver(std::move(rcvr)) {}
 
-    template <class... Args>
-    void complete_value(Args&&... args) {
-        if (!completed.exchange(true, std::memory_order_release)) {
-            stop_source.request_stop();
-            ex::set_value(std::move(outer_receiver), std::forward<Args>(args)...);
+    // Called (possibly from a worker thread) when an escape sender starts.
+    void do_escape(ValueType v) noexcept override {
+        if (!escape_claimed.exchange(true, std::memory_order_acq_rel)) {
+            escape_value.emplace(std::move(v));
+            escaped.store(true, std::memory_order_release);  // publish value
+            stop_source.request_stop();                      // cancel siblings
         }
     }
 
-    template <class Error>
-    void complete_error(Error&& err) {
-        if (!completed.exchange(true, std::memory_order_release)) {
-            stop_source.request_stop();
-            ex::set_error(std::move(outer_receiver), std::forward<Error>(err));
-        }
-    }
-
-    void complete_stopped() {
-        if (!completed.exchange(true, std::memory_order_release)) {
-            stop_source.request_stop();
-            ex::set_stopped(std::move(outer_receiver));
-        }
+    bool has_escaped() const noexcept {
+        return escaped.load(std::memory_order_acquire);
     }
 };
 
 // ---------------------------------------------------------------------------
-// Escape sender — the reified captured continuation. When started it completes
-// the *outer* receiver (via the shared state) and abandons its own local
-// receiver, acting as an execution sink.
+// Escape sender — the reified captured continuation. When started it stashes
+// the escaped value into the sink and requests stop, then completes its OWN
+// local receiver with set_stopped() so the enclosing graph cancels and drains.
+// The escaped value is delivered to the outer receiver later, by the inner
+// operation's single completion (see inner_receiver). Hence it advertises
+// set_stopped_t().
 // ---------------------------------------------------------------------------
-template <class SharedState, class ValueType, class LocalReceiver>
+template <class ValueType, class LocalReceiver>
 struct escape_op_state {
     using operation_state_concept = ex::operation_state_tag;
 
-    SharedState*  shared_state;
-    ValueType     value;
-    LocalReceiver local_receiver;  // intentionally never completed
+    escape_sink<ValueType>* sink;
+    ValueType               value;
+    LocalReceiver           local_receiver;
 
-    void start() & noexcept { shared_state->complete_value(std::move(value)); }
+    void start() & noexcept {
+        sink->do_escape(std::move(value));
+        ex::set_stopped(std::move(local_receiver));
+    }
 };
 
-template <class SharedState, class ValueType>
+template <class ValueType>
 struct escape_sender {
     using sender_concept = ex::sender_tag;
 
-    SharedState* shared_state;
-    ValueType    value;
+    escape_sink<ValueType>* sink;
+    ValueType               value;
 
     template <typename, typename... Env>
     static consteval auto get_completion_signatures() noexcept {
-        return ex::completion_signatures<ex::set_value_t(ValueType)>{};
+        return ex::completion_signatures<ex::set_stopped_t()>{};
     }
 
     template <ex::receiver LocalReceiver>
     auto connect(LocalReceiver rcvr) &&
-        -> escape_op_state<SharedState, ValueType, LocalReceiver> {
-        return {shared_state, std::move(value), std::move(rcvr)};
+        -> escape_op_state<ValueType, LocalReceiver> {
+        return {sink, std::move(value), std::move(rcvr)};
     }
 
     auto get_env() const noexcept -> ex::env<> { return {}; }
 };
 
-template <class SharedState, class ValueType>
+template <class ValueType>
 struct escape_factory {
-    SharedState* shared_state;
+    escape_sink<ValueType>* sink;
 
-    auto operator()(ValueType val) const
-        -> escape_sender<SharedState, ValueType> {
-        return {shared_state, std::move(val)};
+    auto operator()(ValueType val) const -> escape_sender<ValueType> {
+        return {sink, std::move(val)};
     }
 };
 
 // ---------------------------------------------------------------------------
-// Inner receiver — intercepts the non-escaped completion of the user's inner
-// computation, forwarding it to the shared state, and injects the local stop
-// token into the environment seen by the inner sender. The environment is
-// composed from beman's own env utilities (the pattern beman's let adaptor
-// uses): a prop overriding get_stop_token with the local inplace_stop_token,
-// joined over a forwarding view of the outer environment.
+// inner_env_t — the environment the inner sender sees. Built from beman's own
+// env-composition utilities (the same pattern beman's let adaptor uses): a
+// prop overriding get_stop_token with the local inplace_stop_token, joined
+// over a forwarding view of the outer environment. Used both at runtime and
+// for completion-signature derivation, so the two always agree.
+// ---------------------------------------------------------------------------
+template <class OuterEnv>
+using inner_env_t = decltype(ex::detail::join_env(
+    ex::prop{ex::get_stop_token, std::declval<ex::inplace_stop_token>()},
+    ex::detail::fwd_env(std::declval<OuterEnv>())));
+
+// ---------------------------------------------------------------------------
+// Inner receiver — intercepts the user's inner computation. Its environment
+// injects the local stop token. Its completion is the SOLE point that
+// completes the outer receiver: if an escape was claimed, deliver the stashed
+// value via set_value; otherwise forward the inner sender's own completion.
 // ---------------------------------------------------------------------------
 template <class SharedState>
 struct inner_receiver {
@@ -124,17 +148,35 @@ struct inner_receiver {
 
     SharedState* shared_state;
 
+    template <class Fallback>
+    void finish(Fallback&& fallback) noexcept {
+        if (shared_state->has_escaped()) {
+            ex::set_value(std::move(shared_state->outer_receiver),
+                          std::move(*shared_state->escape_value));
+        } else {
+            std::forward<Fallback>(fallback)();
+        }
+    }
+
     template <class... Args>
     void set_value(Args&&... args) && noexcept {
-        shared_state->complete_value(std::forward<Args>(args)...);
+        finish([&] {
+            ex::set_value(std::move(shared_state->outer_receiver),
+                          std::forward<Args>(args)...);
+        });
     }
 
     template <class Error>
     void set_error(Error&& err) && noexcept {
-        shared_state->complete_error(std::forward<Error>(err));
+        finish([&] {
+            ex::set_error(std::move(shared_state->outer_receiver),
+                          std::forward<Error>(err));
+        });
     }
 
-    void set_stopped() && noexcept { shared_state->complete_stopped(); }
+    void set_stopped() && noexcept {
+        finish([&] { ex::set_stopped(std::move(shared_state->outer_receiver)); });
+    }
 
     auto get_env() const noexcept {
         return ex::detail::join_env(
@@ -156,7 +198,7 @@ struct call_cc_op_state {
     using operation_state_concept = ex::operation_state_tag;
 
     using SharedStateType   = call_cc_shared_state<OuterReceiver, ValueType>;
-    using InnerSenderType   = std::invoke_result_t<F&, escape_factory<SharedStateType, ValueType>>;
+    using InnerSenderType   = std::invoke_result_t<F&, escape_factory<ValueType>>;
     using InnerReceiverType = inner_receiver<SharedStateType>;
     using InnerOpStateType  = ex::connect_result_t<InnerSenderType, InnerReceiverType>;
 
@@ -201,14 +243,15 @@ struct call_cc_op_state {
             shared_state.stop_source.request_stop();
         });
 
-        escape_factory<SharedStateType, ValueType> factory{&shared_state};
+        escape_factory<ValueType> factory{&shared_state};
         try {
             ::new (&inner_storage.op) InnerOpStateType(
                 ex::connect(user_func(factory), InnerReceiverType{&shared_state}));
         } catch (...) {
             // A throwing user factory or connect must be reported through the
             // error channel, not escape this noexcept start() and terminate.
-            shared_state.complete_error(std::current_exception());
+            ex::set_error(std::move(shared_state.outer_receiver),
+                          std::current_exception());
             return;
         }
         started = true;

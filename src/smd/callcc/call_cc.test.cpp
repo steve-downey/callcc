@@ -29,7 +29,7 @@ struct probe_receiver {
 };
 }  // namespace
 
-TEST_CASE("shared_state completes the outer receiver exactly once", "[callcc][shared_state]") {
+TEST_CASE("shared_state stashes the escaped value without completing outer", "[callcc][shared_state]") {
     int  value   = 0;
     bool errored = false;
     bool stopped = false;
@@ -37,29 +37,36 @@ TEST_CASE("shared_state completes the outer receiver exactly once", "[callcc][sh
     smd::callcc_detail::call_cc_shared_state<probe_receiver, int> ss{
         probe_receiver{&value, &errored, &stopped}};
 
+    REQUIRE_FALSE(ss.has_escaped());
     REQUIRE_FALSE(ss.stop_source.stop_requested());
 
-    ss.complete_value(7);
-    REQUIRE(value == 7);
-    REQUIRE(ss.stop_source.stop_requested());  // completion requests stop
+    ss.do_escape(7);
+    REQUIRE(ss.has_escaped());
+    REQUIRE(*ss.escape_value == 7);
+    REQUIRE(ss.stop_source.stop_requested());  // escape requests downward stop
+    // do_escape does NOT complete the outer receiver (drain-then-complete).
+    REQUIRE(value == 0);
+    REQUIRE_FALSE(errored);
+    REQUIRE_FALSE(stopped);
 
-    // A second completion attempt is dropped (exactly-one-completion rule).
-    ss.complete_value(99);
-    REQUIRE(value == 7);
+    // A second escape is dropped (one-shot winner latch).
+    ss.do_escape(99);
+    REQUIRE(*ss.escape_value == 7);
 }
 
 namespace {
-// A throwaway local receiver for the escape sender; the escape sender never
-// completes it, so its members need only exist to satisfy the receiver concept.
-struct discard_receiver {
+// A local receiver recording the channel the escape sender completes it with.
+struct local_probe {
     using receiver_concept = ex::receiver_tag;
-    void set_value(int) && noexcept {}
+    bool* got_value;
+    bool* got_stopped;
+    void set_value(int) && noexcept { *got_value = true; }
     void set_error(std::exception_ptr) && noexcept {}
-    void set_stopped() && noexcept {}
+    void set_stopped() && noexcept { *got_stopped = true; }
 };
 }  // namespace
 
-TEST_CASE("escape sender completes the outer receiver, not its local one", "[callcc][escape]") {
+TEST_CASE("escape sender stops its local receiver and stashes the value", "[callcc][escape]") {
     int  value   = 0;
     bool errored = false;
     bool stopped = false;
@@ -67,38 +74,49 @@ TEST_CASE("escape sender completes the outer receiver, not its local one", "[cal
     using shared_t = smd::callcc_detail::call_cc_shared_state<probe_receiver, int>;
     shared_t ss{probe_receiver{&value, &errored, &stopped}};
 
-    smd::callcc_detail::escape_factory<shared_t, int> factory{&ss};
+    smd::callcc_detail::escape_factory<int> factory{&ss};
     auto sndr = factory(55);
     STATIC_REQUIRE(ex::sender<decltype(sndr)>);
 
-    auto op = ex::connect(std::move(sndr), discard_receiver{});
+    bool got_value = false, got_stopped = false;
+    auto op = ex::connect(std::move(sndr), local_probe{&got_value, &got_stopped});
     ex::start(op);
 
-    REQUIRE(value == 55);                      // outer receiver got the escaped value
-    REQUIRE(ss.stop_source.stop_requested());  // escape requested downward stop
+    REQUIRE(got_stopped);          // local receiver is stopped, not valued
+    REQUIRE_FALSE(got_value);
+    REQUIRE(ss.has_escaped());     // value delivered out-of-band to the sink
+    REQUIRE(*ss.escape_value == 55);
+    REQUIRE(ss.stop_source.stop_requested());
 }
 
-TEST_CASE("inner receiver injects the local stop token and forwards value", "[callcc][inner]") {
+TEST_CASE("inner receiver injects the local stop token; forwards or substitutes", "[callcc][inner]") {
     int  value   = 0;
     bool errored = false;
     bool stopped = false;
 
     using shared_t = smd::callcc_detail::call_cc_shared_state<probe_receiver, int>;
-    shared_t ss{probe_receiver{&value, &errored, &stopped}};
 
-    smd::callcc_detail::inner_receiver<shared_t> rcvr{&ss};
-    STATIC_REQUIRE(ex::receiver<decltype(rcvr)>);
+    SECTION("no escape: forwards the inner value") {
+        shared_t ss{probe_receiver{&value, &errored, &stopped}};
+        smd::callcc_detail::inner_receiver<shared_t> rcvr{&ss};
+        STATIC_REQUIRE(ex::receiver<decltype(rcvr)>);
 
-    // The environment hands out the shared state's local stop token, not the
-    // outer one: requesting stop on the shared source is observable here.
-    auto token = ex::get_stop_token(ex::get_env(rcvr));
-    REQUIRE_FALSE(token.stop_requested());
-    ss.stop_source.request_stop();
-    REQUIRE(token.stop_requested());
+        auto token = ex::get_stop_token(ex::get_env(rcvr));
+        REQUIRE_FALSE(token.stop_requested());
+        ss.stop_source.request_stop();
+        REQUIRE(token.stop_requested());  // env hands out the local token
 
-    // set_value forwards into the shared state and out to the outer receiver.
-    std::move(rcvr).set_value(33);
-    REQUIRE(value == 33);
+        std::move(rcvr).set_value(33);
+        REQUIRE(value == 33);
+    }
+
+    SECTION("escaped: substitutes the stashed value") {
+        shared_t ss{probe_receiver{&value, &errored, &stopped}};
+        ss.do_escape(88);
+        smd::callcc_detail::inner_receiver<shared_t> rcvr{&ss};
+        std::move(rcvr).set_stopped();   // inner drained as stopped
+        REQUIRE(value == 88);            // escaped value delivered instead
+    }
 }
 
 #include <stdexcept>
