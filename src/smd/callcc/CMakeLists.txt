@@ -2,7 +2,7 @@ include(GNUInstallDirs)
 
 target_sources(
     callcc.callcc
-    INTERFACE FILE_SET callcc_callcc_headers TYPE HEADERS FILES execution_fw.hpp
+    INTERFACE FILE_SET callcc_callcc_headers TYPE HEADERS FILES execution_fw.hpp call_cc.hpp
 )
 
 ## Tests
@@ -31,4 +31,12 @@ if(CALLCC_ENABLE_TESTING)
     endforeach()
 
     catch_discover_tests(callcc_test)
+
+    add_executable(call_cc_test)
+    target_sources(call_cc_test PRIVATE call_cc.test.cpp)
+    target_link_libraries(call_cc_test PRIVATE callcc.callcc Catch2::Catch2WithMain)
+    if(_fw_linker_found)
+        set_target_properties(call_cc_test PROPERTIES LINKER_TYPE "${_fw_linker_upper}")
+    endif()
+    catch_discover_tests(call_cc_test)
 endif()
