@@ -10,6 +10,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <utility>
 
 namespace ex = ::beman::execution;
@@ -154,6 +155,19 @@ TEST_CASE("call_cc reports a throwing factory via set_error (no terminate)", "[c
     } catch (const std::runtime_error& e) {
         REQUIRE(std::string{e.what()} == "factory boom");
     }
+}
+
+TEST_CASE("call_cc carries a non-exception_ptr inner error", "[callcc][error][sigs]") {
+    auto work =
+        smd::call_cc<int>([](auto /*escape*/) {
+            return ex::just_error(std::make_error_code(std::errc::invalid_argument));
+        })
+        | ex::upon_error([](auto /*err*/) { return -1; });
+
+    STATIC_REQUIRE(ex::sender_in<decltype(work), ex::env<>>);
+
+    auto [v] = ex::sync_wait(std::move(work)).value();
+    REQUIRE(v == -1);  // the error_code channel was actually carried + recovered
 }
 
 TEST_CASE("call_cc propagates upward cancellation to inner work", "[callcc][cancel]") {
