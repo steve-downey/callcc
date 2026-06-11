@@ -158,7 +158,91 @@ struct inner_receiver {
     }
 };
 
+// ---------------------------------------------------------------------------
+// Outer operation state — weaves the pieces together. Owns the shared state by
+// value (no heap allocation), then connects and starts the user's inner sender.
+//
+// The inner operation state is held in manual union storage rather than a
+// std::optional because operation states are immovable; placement-new from the
+// connect() prvalue constructs it in place via guaranteed copy elision.
+// ---------------------------------------------------------------------------
+template <class OuterReceiver, class F, class ValueType>
+struct call_cc_op_state {
+    using operation_state_concept = ex::operation_state_tag;
+
+    using SharedStateType   = call_cc_shared_state<OuterReceiver, ValueType>;
+    using InnerSenderType   = std::invoke_result_t<F&, escape_factory<SharedStateType, ValueType>>;
+    using InnerReceiverType = inner_receiver<SharedStateType>;
+    using InnerOpStateType  = ex::connect_result_t<InnerSenderType, InnerReceiverType>;
+
+    SharedStateType shared_state;
+    F               user_func;
+
+    union inner_storage_t {
+        inner_storage_t() {}
+        ~inner_storage_t() {}
+        InnerOpStateType op;
+    };
+    inner_storage_t inner_storage{};
+    bool            started{false};
+
+    call_cc_op_state(OuterReceiver rcvr, F func)
+        : shared_state(std::move(rcvr)), user_func(std::move(func)) {}
+
+    call_cc_op_state(const call_cc_op_state&)            = delete;
+    call_cc_op_state(call_cc_op_state&&)                 = delete;
+    call_cc_op_state& operator=(const call_cc_op_state&) = delete;
+    call_cc_op_state& operator=(call_cc_op_state&&)      = delete;
+
+    ~call_cc_op_state() {
+        if (started) {
+            inner_storage.op.~InnerOpStateType();
+        }
+    }
+
+    void start() & noexcept {
+        escape_factory<SharedStateType, ValueType> factory{&shared_state};
+        ::new (&inner_storage.op) InnerOpStateType(
+            ex::connect(user_func(factory), InnerReceiverType{&shared_state}));
+        started = true;
+        ex::start(inner_storage.op);
+    }
+};
+
+template <class F, class ValueType>
+struct call_cc_sender {
+    using sender_concept = ex::sender_tag;
+
+    F user_func;
+
+    template <typename, typename... Env>
+    static consteval auto get_completion_signatures() noexcept {
+        return ex::completion_signatures<ex::set_value_t(ValueType),
+                                         ex::set_error_t(std::exception_ptr),
+                                         ex::set_stopped_t()>{};
+    }
+
+    template <ex::receiver OuterReceiver>
+    auto connect(OuterReceiver rcvr) &&
+        -> call_cc_op_state<OuterReceiver, F, ValueType> {
+        return {std::move(rcvr), std::move(user_func)};
+    }
+
+    auto get_env() const noexcept -> ex::env<> { return {}; }
+};
+
 }  // namespace callcc_detail
+
+// ---------------------------------------------------------------------------
+// call_cc<ValueType>(f) — the sender factory. `f` is invoked with an escape
+// factory; calling that factory with a ValueType produces an escape sender
+// which, when started, performs the early exit. ValueType is explicit because
+// the escape factory's signature must be known before `f` is invoked.
+// ---------------------------------------------------------------------------
+template <class ValueType, class F>
+auto call_cc(F func) -> callcc_detail::call_cc_sender<F, ValueType> {
+    return {std::move(func)};
+}
 
 }  // namespace smd
 
