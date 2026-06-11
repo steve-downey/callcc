@@ -98,3 +98,26 @@ TEST_CASE("inner receiver injects the local stop token and forwards value", "[ca
     std::move(rcvr).set_value(33);
     REQUIRE(value == 33);
 }
+
+#include <stdexcept>
+
+TEST_CASE("call_cc normal completion forwards inner value", "[callcc]") {
+    auto work = smd::call_cc<int>([](auto /*escape*/) { return ex::just(42); });
+    auto [v]  = ex::sync_wait(std::move(work)).value();
+    REQUIRE(v == 42);
+}
+
+TEST_CASE("call_cc escape completes outer with escaped value", "[callcc][escape]") {
+    auto work = smd::call_cc<int>([](auto escape) { return escape(99); });
+    auto [v]  = ex::sync_wait(std::move(work)).value();
+    REQUIRE(v == 99);
+}
+
+TEST_CASE("call_cc forwards inner errors", "[callcc][error]") {
+    auto work = smd::call_cc<int>([](auto /*escape*/) {
+        return ex::just(0) | ex::then([](int) -> int {
+                   throw std::runtime_error{"boom"};
+               });
+    });
+    REQUIRE_THROWS_AS(ex::sync_wait(std::move(work)), std::runtime_error);
+}
