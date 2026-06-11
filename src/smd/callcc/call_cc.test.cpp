@@ -45,3 +45,33 @@ TEST_CASE("shared_state completes the outer receiver exactly once", "[callcc][sh
     ss.complete_value(99);
     REQUIRE(value == 7);
 }
+
+namespace {
+// A throwaway local receiver for the escape sender; the escape sender never
+// completes it, so its members need only exist to satisfy the receiver concept.
+struct discard_receiver {
+    using receiver_concept = ex::receiver_tag;
+    void set_value(int) && noexcept {}
+    void set_error(std::exception_ptr) && noexcept {}
+    void set_stopped() && noexcept {}
+};
+}  // namespace
+
+TEST_CASE("escape sender completes the outer receiver, not its local one", "[callcc][escape]") {
+    int  value   = 0;
+    bool errored = false;
+    bool stopped = false;
+
+    using shared_t = smd::callcc_detail::call_cc_shared_state<probe_receiver, int>;
+    shared_t ss{probe_receiver{&value, &errored, &stopped}};
+
+    smd::callcc_detail::escape_factory<shared_t, int> factory{&ss};
+    auto sndr = factory(55);
+    STATIC_REQUIRE(ex::sender<decltype(sndr)>);
+
+    auto op = ex::connect(std::move(sndr), discard_receiver{});
+    ex::start(op);
+
+    REQUIRE(value == 55);                      // outer receiver got the escaped value
+    REQUIRE(ss.stop_source.stop_requested());  // escape requested downward stop
+}
