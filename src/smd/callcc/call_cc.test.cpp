@@ -6,6 +6,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <exception>
+#include <functional>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -172,4 +174,96 @@ TEST_CASE("call_cc propagates upward cancellation to inner work", "[callcc][canc
     outer_src.request_stop();  // before start: callback fires during start()
     ex::sync_wait(std::move(stoppable));
     REQUIRE(inner_saw_stop == true);
+}
+
+// --- Drain-then-complete: an escape must not complete the outer receiver until
+// the inner operation itself completes. We use a custom inner sender that fires
+// an escape on start (stashing the value + requesting stop) and then stays
+// pending until the test releases it — proving, deterministically, that the
+// outer stays pending after the escape and only completes when the inner op
+// drains. (A bare escape cannot be a when_all child: it completes set_stopped
+// only, and beman's when_all requires each child to have one value completion.)
+namespace {
+struct manual_controller {
+    std::function<void()> release;
+    bool                  started{false};
+};
+
+template <class R>
+struct escape_then_wait_op {
+    using operation_state_concept = ex::operation_state_tag;
+    smd::callcc_detail::escape_factory<int> esc;
+    manual_controller*                      ctrl;
+    R                                       receiver;
+
+    void start() & noexcept {
+        // Fire the escape synchronously: stashes the value + requests stop, and
+        // completes the throwaway receiver with set_stopped.
+        struct sink_rcvr {
+            using receiver_concept = ex::receiver_tag;
+            void set_value(int) && noexcept {}
+            void set_error(std::exception_ptr) && noexcept {}
+            void set_stopped() && noexcept {}
+        };
+        auto esc_op = ex::connect(esc(123), sink_rcvr{});
+        ex::start(esc_op);
+
+        // Now remain pending; the test completes us later.
+        ctrl->started = true;
+        ctrl->release = [this] { ex::set_value(std::move(receiver), 7); };
+    }
+};
+
+struct escape_then_wait_sender {
+    using sender_concept = ex::sender_tag;
+    smd::callcc_detail::escape_factory<int> esc;
+    manual_controller*                      ctrl;
+
+    template <typename, typename...>
+    static consteval auto get_completion_signatures() noexcept {
+        return ex::completion_signatures<ex::set_value_t(int)>{};
+    }
+    template <ex::receiver R>
+    auto connect(R r) && -> escape_then_wait_op<R> {
+        return {esc, ctrl, std::move(r)};
+    }
+    auto get_env() const noexcept -> ex::env<> { return {}; }
+};
+
+struct drain_receiver {
+    using receiver_concept = ex::receiver_tag;
+    std::optional<int>* out;
+    bool*               errored;
+    bool*               stopped;
+    void set_value(int v) && noexcept { *out = v; }
+    void set_error(std::exception_ptr) && noexcept { *errored = true; }
+    void set_stopped() && noexcept { *stopped = true; }
+};
+}  // namespace
+
+TEST_CASE("call_cc escape waits for the inner op to drain before completing outer", "[callcc][cancel][drain]") {
+    manual_controller ctrl;
+
+    auto work = smd::call_cc<int>([&](auto escape) {
+        return escape_then_wait_sender{escape, &ctrl};
+    });
+
+    std::optional<int> out;
+    bool               errored = false;
+    bool               stopped = false;
+    auto op = ex::connect(std::move(work), drain_receiver{&out, &errored, &stopped});
+    ex::start(op);
+
+    // Escape fired (value stashed, stop requested), but the inner op has not
+    // completed, so the outer must still be pending. Under the original bug the
+    // escape would have completed the outer here.
+    REQUIRE(ctrl.started);
+    REQUIRE_FALSE(out.has_value());
+    REQUIRE_FALSE(errored);
+    REQUIRE_FALSE(stopped);
+
+    // Drain the inner op; only now does the outer complete, with the escaped value.
+    ctrl.release();
+    REQUIRE(out.has_value());
+    REQUIRE(*out == 123);
 }
