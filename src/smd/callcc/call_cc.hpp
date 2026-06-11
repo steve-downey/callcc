@@ -202,8 +202,15 @@ struct call_cc_op_state {
         });
 
         escape_factory<SharedStateType, ValueType> factory{&shared_state};
-        ::new (&inner_storage.op) InnerOpStateType(
-            ex::connect(user_func(factory), InnerReceiverType{&shared_state}));
+        try {
+            ::new (&inner_storage.op) InnerOpStateType(
+                ex::connect(user_func(factory), InnerReceiverType{&shared_state}));
+        } catch (...) {
+            // A throwing user factory or connect must be reported through the
+            // error channel, not escape this noexcept start() and terminate.
+            shared_state.complete_error(std::current_exception());
+            return;
+        }
         started = true;
         ex::start(inner_storage.op);
     }

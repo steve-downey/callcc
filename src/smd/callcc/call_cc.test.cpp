@@ -6,6 +6,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <exception>
+#include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace ex = ::beman::execution;
@@ -120,6 +122,18 @@ TEST_CASE("call_cc forwards inner errors", "[callcc][error]") {
                });
     });
     REQUIRE_THROWS_AS(ex::sync_wait(std::move(work)), std::runtime_error);
+}
+
+TEST_CASE("call_cc reports a throwing factory via set_error (no terminate)", "[callcc][error]") {
+    auto work = smd::call_cc<int>([](auto /*escape*/) -> decltype(ex::just(0)) {
+        throw std::runtime_error{"factory boom"};
+    });
+    try {
+        ex::sync_wait(std::move(work));
+        FAIL("expected sync_wait to throw");
+    } catch (const std::runtime_error& e) {
+        REQUIRE(std::string{e.what()} == "factory boom");
+    }
 }
 
 TEST_CASE("call_cc propagates upward cancellation to inner work", "[callcc][cancel]") {
