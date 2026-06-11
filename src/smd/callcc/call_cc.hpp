@@ -110,6 +110,54 @@ struct escape_factory {
     }
 };
 
+// ---------------------------------------------------------------------------
+// Inner receiver — intercepts the non-escaped completion of the user's inner
+// computation, forwarding it to the shared state, and injects the local stop
+// token into the environment seen by the inner sender.
+// ---------------------------------------------------------------------------
+template <class SharedState, class OuterEnv>
+struct inner_env {
+    SharedState* shared_state;
+    OuterEnv     outer_env;
+
+    auto query(ex::get_stop_token_t) const noexcept -> ex::inplace_stop_token {
+        return shared_state->stop_source.get_token();
+    }
+
+    template <class Query>
+        requires std::is_invocable_v<Query, const OuterEnv&> &&
+                 (!std::is_same_v<Query, ex::get_stop_token_t>)
+    auto query(Query q) const noexcept
+        -> std::invoke_result_t<Query, const OuterEnv&> {
+        return q(outer_env);
+    }
+};
+
+template <class SharedState>
+struct inner_receiver {
+    using receiver_concept = ex::receiver_tag;
+
+    SharedState* shared_state;
+
+    template <class... Args>
+    void set_value(Args&&... args) && noexcept {
+        shared_state->complete_value(std::forward<Args>(args)...);
+    }
+
+    template <class Error>
+    void set_error(Error&& err) && noexcept {
+        shared_state->complete_error(std::forward<Error>(err));
+    }
+
+    void set_stopped() && noexcept { shared_state->complete_stopped(); }
+
+    auto get_env() const noexcept {
+        return inner_env<SharedState,
+                         ex::env_of_t<decltype(shared_state->outer_receiver)>>{
+            shared_state, ex::get_env(shared_state->outer_receiver)};
+    }
+};
+
 }  // namespace callcc_detail
 
 }  // namespace smd
