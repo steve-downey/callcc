@@ -121,3 +121,23 @@ TEST_CASE("call_cc forwards inner errors", "[callcc][error]") {
     });
     REQUIRE_THROWS_AS(ex::sync_wait(std::move(work)), std::runtime_error);
 }
+
+TEST_CASE("call_cc propagates upward cancellation to inner work", "[callcc][cancel]") {
+    ex::inplace_stop_source outer_src;
+    bool inner_saw_stop = false;
+
+    auto work = smd::call_cc<int>([&](auto /*escape*/) {
+        return ex::read_env(ex::get_stop_token) | ex::then([&](auto tok) {
+                   inner_saw_stop = tok.stop_requested();
+                   return 0;
+               });
+    });
+
+    auto stoppable = ex::write_env(
+        std::move(work),
+        ex::prop{ex::get_stop_token, outer_src.get_token()});
+
+    outer_src.request_stop();  // before start: callback fires during start()
+    ex::sync_wait(std::move(stoppable));
+    REQUIRE(inner_saw_stop == true);
+}
