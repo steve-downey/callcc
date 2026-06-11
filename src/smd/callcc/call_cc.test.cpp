@@ -75,3 +75,26 @@ TEST_CASE("escape sender completes the outer receiver, not its local one", "[cal
     REQUIRE(value == 55);                      // outer receiver got the escaped value
     REQUIRE(ss.stop_source.stop_requested());  // escape requested downward stop
 }
+
+TEST_CASE("inner receiver injects the local stop token and forwards value", "[callcc][inner]") {
+    int  value   = 0;
+    bool errored = false;
+    bool stopped = false;
+
+    using shared_t = smd::callcc_detail::call_cc_shared_state<probe_receiver, int>;
+    shared_t ss{probe_receiver{&value, &errored, &stopped}};
+
+    smd::callcc_detail::inner_receiver<shared_t> rcvr{&ss};
+    STATIC_REQUIRE(ex::receiver<decltype(rcvr)>);
+
+    // The environment hands out the shared state's local stop token, not the
+    // outer one: requesting stop on the shared source is observable here.
+    auto token = ex::get_stop_token(ex::get_env(rcvr));
+    REQUIRE_FALSE(token.stop_requested());
+    ss.stop_source.request_stop();
+    REQUIRE(token.stop_requested());
+
+    // set_value forwards into the shared state and out to the outer receiver.
+    std::move(rcvr).set_value(33);
+    REQUIRE(value == 33);
+}
