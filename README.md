@@ -2,13 +2,104 @@
 
 [![OpenSSF Baseline](https://www.bestpractices.dev/projects/12577/baseline)](https://www.bestpractices.dev/projects/12577)
 
-This repo is my current set of best practices for C++ projects. It does evolve somewhat over time.
+This project implements `call_cc` — **call-with-current-continuation** — as a
+C++26 `std::execution` (P2300) sender adaptor, built directly on
+[`beman::execution`](https://github.com/bemanproject/execution).
 
-This is a snapshot as of today, Sat Apr 11 05:26:37 PM BST 2026.
+## What callCC is
 
-The code is trivial so that I can repurpose the framework quickly. A library that returns my name, a test that confirms that works, and an example hello `callcc` that uses the library.
+`callCC` captures *the current continuation* — "the rest of the computation" —
+and hands it to your code as a first-class **escape function**. Calling that
+escape abandons whatever work would normally have followed and resumes at the
+point where the continuation was captured, carrying the value you passed. It is
+the most powerful classical control operator: with it you can build early
+returns, exceptions, generators, coroutines, and backtracking. It comes from
+Scheme (`call/cc`); in Haskell it is the cornerstone of the continuation monad:
 
-The C++ src is all in the ./src directory, including the headers and tests. Take a look at [The Pitchfork Layout Spec](https://www.w3.org/publications/spec-generator/?type=bikeshed-spec&output=html&die-on=fatal&md-date=&url=https%3A%2F%2Fraw.githubusercontent.com%2Fvector-of-bool%2Fpitchfork%2Fdevelop%2Fdata%2Fspec.bs&file=) for some discussion about merged layouts. Short answer is that include directories are an install location, not a source location, but that the directory layouts must still be coherent. Tests are co-located because tests are important and the further away they are, the more they will be dropped.
+```haskell
+callCC :: ((a -> ContT r m b) -> ContT r m a) -> ContT r m a
+```
+
+Senders and receivers *are* continuation-passing style — a receiver is the
+continuation a sender will eventually invoke — so there is a natural
+isomorphism between the continuation monad and the sender/receiver model. That
+correspondence is what makes a sender-based `call_cc` possible. (See
+`docs/` for the long-form derivation.)
+
+## What it can be used for
+
+- **Early return** from the middle of an asynchronous pipeline.
+- **Exception-style non-local exit**: the `call_cc` boundary is the `catch`,
+  invoking the escape is the `throw`.
+- **Multi-level break**: jump straight out of a deeply nested composition,
+  skipping every intervening stage.
+- In languages with *re-invocable* continuations, also generators, coroutines,
+  and backtracking search — see *Limits* below for what this implementation
+  does and does not give you.
+
+## What this implementation does
+
+`smd::call_cc<ValueType>(f)` returns a sender. `f` is invoked with an **escape
+factory**; calling `escape(v)` yields a sender that, when started anywhere in
+your graph, performs the early exit and makes the whole `call_cc` block complete
+with `v`. Concretely it:
+
+- is built **directly on `beman::execution`**, not through the `fw::exec`
+  facade, and keeps its internals in the ADL-isolated `smd::callcc_detail`;
+- uses **drain-then-complete** semantics: an escape stashes its value and issues
+  a cooperative stop request to the abandoned inner work, and the block
+  completes only once that inner operation has actually drained — so the
+  operation-state tree is never torn down while work is still in flight (no
+  use-after-free);
+- **derives its completion signatures from the inner sender** (unioned with the
+  escape's `set_value_t(ValueType)` and a `set_error_t(exception_ptr)` for a
+  throwing factory/connect), so it reports what it can really complete with;
+- reports a throwing user factory or `connect` through `set_error` rather than
+  terminating; and
+- allocates nothing on the heap (the shared state lives by value in the
+  operation state).
+
+## Limits
+
+- **One-shot escape.** The captured continuation is single-use: it is a sender
+  you connect and start once, not a value you can store and re-invoke later.
+  Constructs that need *multi-shot* continuations — generators, coroutine
+  resumption, backtracking — are therefore **not** supported.
+- **The escape lives on the stopped channel.** An escape sender completes
+  `set_stopped()` and delivers its value out-of-band, so a bare `escape(v)` is
+  **not** a valid `when_all` child (beman's `when_all` requires each child to
+  have exactly one value completion). Express a *conditional* escape on the
+  value/error/stopped channels — e.g. an `ex::let_error`/`ex::let_stopped`
+  handler that escapes — rather than as two divergent `let_value` return types.
+- **`ValueType` is explicit** (`call_cc<int>(...)`): the escape factory's
+  signature must be known before `f` runs.
+- **Cancellation is cooperative.** Abandoned work is asked to stop via stop
+  tokens; inner work that ignores its stop token is not forcibly interrupted —
+  the block waits for it to finish.
+- The escaped value type and the inner sender's normal value completion must be
+  consistent for single-value consumers (e.g. `sync_wait`) to accept the block.
+
+## Examples
+
+Three runnable demonstrations live in [`src/examples/`](./src/examples), each a
+classic use of callCC. Build them with `make TOOLCHAIN=gcc-16` (or your
+toolchain of choice) and run the binaries from the build tree.
+
+- **`callcc_early_return.cpp` — early return.** Reaches the escape half-way
+  through a pipeline and jumps straight out; the trailing stages never run. A
+  second graph that does not take the escape runs to completion, for contrast.
+- **`callcc_exception.cpp` — exception-like non-local exit.** A stage throws on
+  bad input; an `ex::let_error` handler is the `catch` and escapes with a
+  recovery value. Good input flows through the value channel untouched — a
+  conditional escape expressed across completion channels.
+- **`callcc_deep_escape.cpp` — escape from deep nesting.** Escapes from the
+  innermost of three nested `let_value` levels straight back to the boundary,
+  bypassing both outer trailing stages (verified with side-effect flags).
+
+## Project scaffolding
+
+The repository also serves as a working C++ project scaffold (CI, linting,
+packaging, presentation export). The C++ src is all in the ./src directory, including the headers and tests. Take a look at [The Pitchfork Layout Spec](https://www.w3.org/publications/spec-generator/?type=bikeshed-spec&output=html&die-on=fatal&md-date=&url=https%3A%2F%2Fraw.githubusercontent.com%2Fvector-of-bool%2Fpitchfork%2Fdevelop%2Fdata%2Fspec.bs&file=) for some discussion about merged layouts. Short answer is that include directories are an install location, not a source location, but that the directory layouts must still be coherent. Tests are co-located because tests are important and the further away they are, the more they will be dropped.
 
 The CMake is contemporary, post-modern, so not just target oriented, it is also file set oriented.
 
