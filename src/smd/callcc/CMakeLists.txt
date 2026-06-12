@@ -2,35 +2,41 @@ include(GNUInstallDirs)
 
 target_sources(
     callcc.callcc
-    PUBLIC FILE_SET callcc_callcc_headers TYPE HEADERS FILES callcc.hpp
-    PRIVATE callcc.cpp
+    INTERFACE FILE_SET callcc_callcc_headers TYPE HEADERS FILES execution_fw.hpp call_cc.hpp
 )
 
 ## Tests
-if(CALLCC_ENABLE_TESTING AND NOT GTest_FOUND)
-    find_package(GTest QUIET)
-    if(GTest_FOUND)
-        include(GoogleTest)
-    else()
-        message(
-            WARNING
-            "
-No provider for GTest. Unable to build tests.
-Consider using CMAKE_PROJECT_TOP_LEVEL_INCLUDES=./cmake/use-fetch-content.cmake as documented in the README.md
-"
-        )
-    endif()
-endif()
-
 if(CALLCC_ENABLE_TESTING)
     add_executable(callcc_test)
 
-    target_sources(callcc_test PRIVATE callcc.test.cpp)
+    target_sources(callcc_test PRIVATE execution_fw.test.cpp)
 
-    target_link_libraries(callcc_test callcc.callcc)
-    target_link_libraries(callcc_test GTest::gtest)
-    target_link_libraries(callcc_test GTest::gtest_main)
+    target_link_libraries(callcc_test PRIVATE callcc.callcc Catch2::Catch2WithMain)
 
-    include(GoogleTest)
-    gtest_discover_tests(callcc_test)
+    # Completion-signature template expansion blows up symbol tables; use a
+    # high-concurrency linker if one is available.
+    foreach(_fw_linker mold lld)
+        if(NOT _fw_linker_found)
+            find_program(_fw_linker_path NAMES "${_fw_linker}")
+            if(_fw_linker_path)
+                string(TOUPPER "${_fw_linker}" _fw_linker_upper)
+                set_target_properties(
+                    callcc_test
+                    PROPERTIES LINKER_TYPE "${_fw_linker_upper}"
+                )
+                message(STATUS "callcc_test: using ${_fw_linker} linker")
+                set(_fw_linker_found TRUE)
+            endif()
+        endif()
+    endforeach()
+
+    catch_discover_tests(callcc_test)
+
+    add_executable(call_cc_test)
+    target_sources(call_cc_test PRIVATE call_cc.test.cpp)
+    target_link_libraries(call_cc_test PRIVATE callcc.callcc Catch2::Catch2WithMain)
+    if(_fw_linker_found)
+        set_target_properties(call_cc_test PROPERTIES LINKER_TYPE "${_fw_linker_upper}")
+    endif()
+    catch_discover_tests(call_cc_test)
 endif()

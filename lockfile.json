@@ -1,10 +1,16 @@
 {
   "dependencies": [
     {
-      "name": "googletest",
-      "package_name": "GTest",
-      "git_repository": "https://github.com/google/googletest.git",
-      "git_tag": "e39786088138f2749d64e9e90e0f9902daa77c40"
+      "name": "beman.execution",
+      "package_name": "beman.execution",
+      "git_repository": "https://github.com/bemanproject/execution.git",
+      "git_tag": "e5aea757b575d1faf58d5b44c7f5fb821a618aa3"
+    },
+    {
+      "name": "Catch2",
+      "package_name": "Catch2",
+      "git_repository": "https://github.com/catchorg/Catch2.git",
+      "git_tag": "v3.7.0"
     }
   ]
 }

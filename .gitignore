@@ -16,3 +16,4 @@ uv.lock
 *.html
 /docs/html/
 /.claude/settings.local.json
+/tmp/
