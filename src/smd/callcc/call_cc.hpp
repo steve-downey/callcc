@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // A C++26 std::execution sender adaptor implementing the semantics of
-// Haskell's callCC (call-with-current-continuation), built *directly* on
-// beman::execution (not through the fw::exec facade).
+// Haskell's callCC (call-with-current-continuation), built directly on
+// beman::execution.
 #ifndef INCLUDED_SMD_CALLCC_CALL_CC
 #define INCLUDED_SMD_CALLCC_CALL_CC
 

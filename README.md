@@ -44,8 +44,8 @@ factory**; calling `escape(v)` yields a sender that, when started anywhere in
 your graph, performs the early exit and makes the whole `call_cc` block complete
 with `v`. Concretely it:
 
-- is built **directly on `beman::execution`**, not through the `fw::exec`
-  facade, and keeps its internals in the ADL-isolated `smd::callcc_detail`;
+- is built **directly on `beman::execution`** and keeps its internals in the
+  ADL-isolated `smd::callcc_detail`;
 - uses **drain-then-complete** semantics: an escape stashes its value and issues
   a cooperative stop request to the abandoned inner work, and the block
   completes only once that inner operation has actually drained — so the
