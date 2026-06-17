@@ -65,7 +65,7 @@ TEST_CASE("Cancellation Propagation via let_value", "[exec][cancel]") {
     auto work = fw::exec::just()
         | fw::exec::let_value([&]() {
             stop_source.request_stop(); // Trigger cancellation midway
-            return fw::exec::just() 
+            return fw::exec::just()
                  | fw::exec::then([](){ return 1; });
         })
         | fw::exec::upon_stopped([&]() {
@@ -97,10 +97,10 @@ TEST_CASE("When_All Memory Lifecycle", "[exec][concurrency]") {
                | fw::exec::then([](int a, int b) { return a + b; });
 
     auto [result] = fw::exec::sync_wait(std::move(graph)).value();
-    
+
     REQUIRE(result == 30);
     // Critical: Ensure no operation_state objects leaked after sync_wait returns.
-    REQUIRE(active_states.load() == 0); 
+    REQUIRE(active_states.load() == 0);
 }
 ```
 

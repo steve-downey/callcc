@@ -49,21 +49,21 @@ struct escape_sink {
 // ---------------------------------------------------------------------------
 template <class OuterReceiver, class ValueType>
 struct call_cc_shared_state : escape_sink<ValueType> {
-    OuterReceiver            outer_receiver;
-    ex::inplace_stop_source  stop_source;
-    std::atomic<bool>        escape_claimed{false};  // one-shot winner latch
-    std::atomic<bool>        escaped{false};         // publishes escape_value
+    OuterReceiver outer_receiver;
+    ex::inplace_stop_source stop_source;
+    std::atomic<bool> escape_claimed{false}; // one-shot winner latch
+    std::atomic<bool> escaped{false};        // publishes escape_value
     std::optional<ValueType> escape_value;
 
-    explicit call_cc_shared_state(OuterReceiver&& rcvr)
+    explicit call_cc_shared_state(OuterReceiver &&rcvr)
         : outer_receiver(std::move(rcvr)) {}
 
     // Called (possibly from a worker thread) when an escape sender starts.
     void do_escape(ValueType v) noexcept override {
         if (!escape_claimed.exchange(true, std::memory_order_acq_rel)) {
             escape_value.emplace(std::move(v));
-            escaped.store(true, std::memory_order_release);  // publish value
-            stop_source.request_stop();                      // cancel siblings
+            escaped.store(true, std::memory_order_release); // publish value
+            stop_source.request_stop();                     // cancel siblings
         }
     }
 
@@ -84,9 +84,9 @@ template <class ValueType, class LocalReceiver>
 struct escape_op_state {
     using operation_state_concept = ex::operation_state_tag;
 
-    escape_sink<ValueType>* sink;
-    ValueType               value;
-    LocalReceiver           local_receiver;
+    escape_sink<ValueType> *sink;
+    ValueType value;
+    LocalReceiver local_receiver;
 
     void start() & noexcept {
         sink->do_escape(std::move(value));
@@ -98,8 +98,8 @@ template <class ValueType>
 struct escape_sender {
     using sender_concept = ex::sender_tag;
 
-    escape_sink<ValueType>* sink;
-    ValueType               value;
+    escape_sink<ValueType> *sink;
+    ValueType value;
 
     template <typename, typename... Env>
     static consteval auto get_completion_signatures() noexcept {
@@ -107,8 +107,8 @@ struct escape_sender {
     }
 
     template <ex::receiver LocalReceiver>
-    auto connect(LocalReceiver rcvr) &&
-        -> escape_op_state<ValueType, LocalReceiver> {
+    auto connect(
+        LocalReceiver rcvr) && -> escape_op_state<ValueType, LocalReceiver> {
         return {sink, std::move(value), std::move(rcvr)};
     }
 
@@ -117,7 +117,7 @@ struct escape_sender {
 
 template <class ValueType>
 struct escape_factory {
-    escape_sink<ValueType>* sink;
+    escape_sink<ValueType> *sink;
 
     auto operator()(ValueType val) const -> escape_sender<ValueType> {
         return {sink, std::move(val)};
@@ -146,10 +146,10 @@ template <class SharedState>
 struct inner_receiver {
     using receiver_concept = ex::receiver_tag;
 
-    SharedState* shared_state;
+    SharedState *shared_state;
 
     template <class Fallback>
-    void finish(Fallback&& fallback) noexcept {
+    void finish(Fallback &&fallback) noexcept {
         if (shared_state->has_escaped()) {
             ex::set_value(std::move(shared_state->outer_receiver),
                           std::move(*shared_state->escape_value));
@@ -159,7 +159,7 @@ struct inner_receiver {
     }
 
     template <class... Args>
-    void set_value(Args&&... args) && noexcept {
+    void set_value(Args &&...args) && noexcept {
         finish([&] {
             ex::set_value(std::move(shared_state->outer_receiver),
                           std::forward<Args>(args)...);
@@ -167,7 +167,7 @@ struct inner_receiver {
     }
 
     template <class Error>
-    void set_error(Error&& err) && noexcept {
+    void set_error(Error &&err) && noexcept {
         finish([&] {
             ex::set_error(std::move(shared_state->outer_receiver),
                           std::forward<Error>(err));
@@ -175,7 +175,8 @@ struct inner_receiver {
     }
 
     void set_stopped() && noexcept {
-        finish([&] { ex::set_stopped(std::move(shared_state->outer_receiver)); });
+        finish(
+            [&] { ex::set_stopped(std::move(shared_state->outer_receiver)); });
     }
 
     auto get_env() const noexcept {
@@ -197,17 +198,20 @@ template <class OuterReceiver, class F, class ValueType>
 struct call_cc_op_state {
     using operation_state_concept = ex::operation_state_tag;
 
-    using SharedStateType   = call_cc_shared_state<OuterReceiver, ValueType>;
-    using InnerSenderType   = std::invoke_result_t<F&, escape_factory<ValueType>>;
+    using SharedStateType = call_cc_shared_state<OuterReceiver, ValueType>;
+    using InnerSenderType =
+        std::invoke_result_t<F &, escape_factory<ValueType>>;
     using InnerReceiverType = inner_receiver<SharedStateType>;
-    using InnerOpStateType  = ex::connect_result_t<InnerSenderType, InnerReceiverType>;
+    using InnerOpStateType =
+        ex::connect_result_t<InnerSenderType, InnerReceiverType>;
 
     using OuterStopToken = decltype(ex::get_stop_token(
-        ex::get_env(std::declval<const OuterReceiver&>())));
-    using StopCallback   = ex::stop_callback_for_t<OuterStopToken, std::function<void()>>;
+        ex::get_env(std::declval<const OuterReceiver &>())));
+    using StopCallback =
+        ex::stop_callback_for_t<OuterStopToken, std::function<void()>>;
 
-    SharedStateType             shared_state;
-    F                           user_func;
+    SharedStateType shared_state;
+    F user_func;
     std::optional<StopCallback> stop_callback;
 
     union inner_storage_t {
@@ -216,15 +220,15 @@ struct call_cc_op_state {
         InnerOpStateType op;
     };
     inner_storage_t inner_storage{};
-    bool            started{false};
+    bool started{false};
 
     call_cc_op_state(OuterReceiver rcvr, F func)
         : shared_state(std::move(rcvr)), user_func(std::move(func)) {}
 
-    call_cc_op_state(const call_cc_op_state&)            = delete;
-    call_cc_op_state(call_cc_op_state&&)                 = delete;
-    call_cc_op_state& operator=(const call_cc_op_state&) = delete;
-    call_cc_op_state& operator=(call_cc_op_state&&)      = delete;
+    call_cc_op_state(const call_cc_op_state &) = delete;
+    call_cc_op_state(call_cc_op_state &&) = delete;
+    call_cc_op_state &operator=(const call_cc_op_state &) = delete;
+    call_cc_op_state &operator=(call_cc_op_state &&) = delete;
 
     ~call_cc_op_state() {
         if (started) {
@@ -239,14 +243,13 @@ struct call_cc_op_state {
         // callback fires immediately here.
         auto outer_token =
             ex::get_stop_token(ex::get_env(shared_state.outer_receiver));
-        stop_callback.emplace(outer_token, [this]() {
-            shared_state.stop_source.request_stop();
-        });
+        stop_callback.emplace(
+            outer_token, [this]() { shared_state.stop_source.request_stop(); });
 
         escape_factory<ValueType> factory{&shared_state};
         try {
-            ::new (&inner_storage.op) InnerOpStateType(
-                ex::connect(user_func(factory), InnerReceiverType{&shared_state}));
+            ::new (&inner_storage.op) InnerOpStateType(ex::connect(
+                user_func(factory), InnerReceiverType{&shared_state}));
         } catch (...) {
             // A throwing user factory or connect must be reported through the
             // error channel, not escape this noexcept start() and terminate.
@@ -271,31 +274,34 @@ struct call_cc_sender {
     // factory/connect.
     template <typename, typename... Env>
     static consteval auto get_completion_signatures() noexcept {
-        using inner_sender = std::invoke_result_t<F&, escape_factory<ValueType>>;
-        using extra = ex::completion_signatures<ex::set_value_t(ValueType),
-                                                ex::set_error_t(std::exception_ptr)>;
+        using inner_sender =
+            std::invoke_result_t<F &, escape_factory<ValueType>>;
+        using extra =
+            ex::completion_signatures<ex::set_value_t(ValueType),
+                                      ex::set_error_t(std::exception_ptr)>;
         if constexpr (sizeof...(Env) == 0) {
             using inner_sigs = ex::completion_signatures_of_t<inner_sender>;
             return ex::detail::meta::unique<
                 ex::detail::meta::combine<inner_sigs, extra>>{};
         } else {
             using inner_sigs =
-                ex::completion_signatures_of_t<inner_sender, inner_env_t<Env>...>;
+                ex::completion_signatures_of_t<inner_sender,
+                                               inner_env_t<Env>...>;
             return ex::detail::meta::unique<
                 ex::detail::meta::combine<inner_sigs, extra>>{};
         }
     }
 
     template <ex::receiver OuterReceiver>
-    auto connect(OuterReceiver rcvr) &&
-        -> call_cc_op_state<OuterReceiver, F, ValueType> {
+    auto connect(OuterReceiver rcvr)
+        && -> call_cc_op_state<OuterReceiver, F, ValueType> {
         return {std::move(rcvr), std::move(user_func)};
     }
 
     auto get_env() const noexcept -> ex::env<> { return {}; }
 };
 
-}  // namespace callcc_detail
+} // namespace callcc_detail
 
 // ---------------------------------------------------------------------------
 // call_cc<ValueType>(f) — the sender factory. `f` is invoked with an escape
@@ -308,6 +314,6 @@ auto call_cc(F func) -> callcc_detail::call_cc_sender<F, ValueType> {
     return {std::move(func)};
 }
 
-}  // namespace smd
+} // namespace smd
 
-#endif  // INCLUDED_SMD_CALLCC_CALL_CC
+#endif // INCLUDED_SMD_CALLCC_CALL_CC

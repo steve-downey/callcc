@@ -9,7 +9,10 @@ target_sources(
 if(CALLCC_ENABLE_TESTING)
     add_executable(call_cc_test)
     target_sources(call_cc_test PRIVATE call_cc.test.cpp)
-    target_link_libraries(call_cc_test PRIVATE callcc.callcc Catch2::Catch2WithMain)
+    target_link_libraries(
+        call_cc_test
+        PRIVATE callcc.callcc Catch2::Catch2WithMain
+    )
 
     # Completion-signature template expansion blows up symbol tables; use a
     # high-concurrency linker if one is available.

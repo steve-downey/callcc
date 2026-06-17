@@ -16,13 +16,13 @@ struct call_cc_shared_state {
     ex::inplace_stop_source stop_source;
     std::atomic<bool> completed{false};
 
-    explicit call_cc_shared_state(OuterReceiver&& rcvr) 
+    explicit call_cc_shared_state(OuterReceiver&& rcvr)
         : outer_receiver(std::move(rcvr)) {}
 
     template <class... Args>
     void complete_value(Args&&... args) {
         if (!completed.exchange(true, std::memory_order_release)) {
-            stop_source.request_stop(); 
+            stop_source.request_stop();
             ex::set_value(std::move(outer_receiver), std::forward<Args>(args)...);
         }
     }
@@ -45,7 +45,7 @@ struct call_cc_shared_state {
 The use of std::memory_order_release is critical during the exchange operation. This ensures that any memory writes performed by the thread invoking the escape are visible to whatever thread subsequently executes the outer receiver's continuation. This prevents subtle data races when escaping across CPU cores.Next, the Escape Sender and its corresponding Operation State are defined using C++26 member-CPO patterns. The Escape Sender acts as the injected continuation parameter. When connected, the Escape Operation State is instantiated .C++template <class SharedState, class ValueType, class LocalReceiver>
 struct escape_op_state {
     using operation_state_concept = ex::operation_state_t;
-    
+
     SharedState* shared_state_;
     ValueType value_;
     LocalReceiver local_receiver_;
@@ -69,7 +69,7 @@ struct escape_sender {
             shared_state_, std::move(value_), std::move(rcvr)
         };
     }
-    
+
     auto get_env() const noexcept -> ex::empty_env {
         return {};
     }
@@ -176,7 +176,7 @@ struct call_cc_sender {
     auto connect(OuterReceiver rcvr) && {
         return call_cc_op_state<OuterReceiver, F, ValueType>{std::move(rcvr), std::move(user_func_)};
     }
-    
+
     auto get_env() const noexcept -> ex::empty_env {
         return {};
     }
