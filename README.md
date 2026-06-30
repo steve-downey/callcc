@@ -66,27 +66,42 @@ with `v`. Concretely it:
 
 - **One-shot escape.** The captured continuation is single-use: it is a sender
   you connect and start once, not a value you can store and re-invoke later.
-  Constructs that need *multi-shot* continuations — generators, coroutine
-  resumption, backtracking — are therefore **not** supported.
-- **The escape lives on the stopped channel.** An escape sender completes
-  `set_stopped()` and delivers its value out-of-band, so a bare `escape(v)` is
-  **not** a valid `when_all` child (beman's `when_all` requires each child to
-  have exactly one value completion). Express a *conditional* escape on the
-  value/error/stopped channels — e.g. an `ex::let_error`/`ex::let_stopped`
-  handler that escapes — rather than as two divergent `let_value` return types.
+  This is inherent to P2300: operation states are immovable (`start()` takes
+  `&`, not `&&`) and senders are consumed on `connect`. Multi-shot
+  continuations — generators, coroutine resumption, backtracking — require
+  fibers or stackful coroutines, a fundamentally different mechanism.
+- **The default escape lives on the stopped channel.** `escape(v)` completes
+  its local receiver with `set_stopped()` and delivers its value out-of-band,
+  so it is not a valid `when_all` child (beman's `when_all` requires each child
+  to have exactly one value completion). For positions that require a value
+  completion, use `escape.value(v)` instead — it advertises
+  `set_value_t(ValueType)`, satisfying the constraint while still triggering
+  the cooperative escape. Use the stopped-channel `escape(v)` inside
+  `let_value`/`let_error`/`let_stopped` handlers; use `escape.value(v)` as a
+  `when_all` child (see `callcc_when_all.cpp`).
 - **`ValueType` is explicit** (`call_cc<int>(...)`): the escape factory's
-  signature must be known before `f` runs.
+  signature must be known before `f` runs — the factory type depends on
+  `ValueType`, and `f` receives the factory, so the type cannot be deduced from
+  how `f` uses the factory. Two convenience forms reduce the ergonomic burden:
+  - `call_cc_void(f)` — for early exit with no return value (`monostate`).
+  - `call_cc_from(f)` — deduces `ValueType` from a typed parameter:
+    `call_cc_from([](smd::escape_fn<int> escape) { ... })`. Only works for
+    non-generic lambdas.
 - **Cancellation is cooperative.** Abandoned work is asked to stop via stop
   tokens; inner work that ignores its stop token is not forcibly interrupted —
-  the block waits for it to finish.
-- The escaped value type and the inner sender's normal value completion must be
-  consistent for single-value consumers (e.g. `sync_wait`) to accept the block.
+  the block waits for it to finish. This matches P2300's design philosophy:
+  `when_all`'s internal cancellation has the same property.
+- **Value type consistency.** The escaped value type and the inner sender's
+  normal value completion must be consistent for single-value consumers (e.g.
+  `sync_wait`) to accept the block. Ensure both paths produce the same type,
+  or use different completion channels (see `callcc_exception.cpp`, where the
+  escape fires from `let_error` and the normal path flows through `set_value`).
 
 ## Examples
 
-Three runnable demonstrations live in [`src/examples/`](./src/examples), each a
-classic use of callCC. Build them with `make TOOLCHAIN=gcc-16` (or your
-toolchain of choice) and run the binaries from the build tree.
+Five runnable demonstrations live in [`src/examples/`](./src/examples). Build
+them with `make TOOLCHAIN=gcc-16` (or your toolchain of choice) and run the
+binaries from the build tree.
 
 - **`callcc_early_return.cpp` — early return.** Reaches the escape half-way
   through a pipeline and jumps straight out; the trailing stages never run. A
@@ -98,6 +113,11 @@ toolchain of choice) and run the binaries from the build tree.
 - **`callcc_deep_escape.cpp` — escape from deep nesting.** Escapes from the
   innermost of three nested `let_value` levels straight back to the boundary,
   bypassing both outer trailing stages (verified with side-effect flags).
+- **`callcc_when_all.cpp` — value-channel escape in `when_all`.** Uses
+  `escape.value(v)` as a `when_all` child, demonstrating the value-channel
+  escape that satisfies `when_all`'s completion-signature constraint.
+- **`callcc_void_escape.cpp` — void escape with `call_cc_void`.** Early exit
+  carrying no value (`std::monostate`), using the `call_cc_void` convenience.
 
 ## Project scaffolding
 

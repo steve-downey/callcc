@@ -302,3 +302,64 @@ TEST_CASE(
     REQUIRE(out.has_value());
     REQUIRE(*out == 123);
 }
+
+TEST_CASE("value_escape sender values its local receiver and stashes the value",
+          "[callcc][value_escape]") {
+    int value = 0;
+    bool errored = false;
+    bool stopped = false;
+
+    using shared_t =
+        smd::callcc_detail::call_cc_shared_state<probe_receiver, int>;
+    shared_t ss{probe_receiver{&value, &errored, &stopped}};
+
+    smd::callcc_detail::escape_factory<int> factory{&ss};
+    auto sndr = factory.value(55);
+    STATIC_REQUIRE(ex::sender<decltype(sndr)>);
+
+    bool got_value = false, got_stopped = false;
+    auto op =
+        ex::connect(std::move(sndr), local_probe{&got_value, &got_stopped});
+    ex::start(op);
+
+    REQUIRE(got_value);
+    REQUIRE_FALSE(got_stopped);
+    REQUIRE(ss.has_escaped());
+    REQUIRE(*ss.escape_value == 55);
+    REQUIRE(ss.stop_source.stop_requested());
+}
+
+TEST_CASE("escape.value(v) works end-to-end through call_cc",
+          "[callcc][value_escape]") {
+    auto work = smd::call_cc<int>([](auto escape) { return escape.value(42); });
+    auto [v] = ex::sync_wait(std::move(work)).value();
+    REQUIRE(v == 42);
+}
+
+TEST_CASE("call_cc_void normal completion", "[callcc][void]") {
+    auto work = smd::call_cc_void(
+        [](auto /*escape*/) { return ex::just(std::monostate{}); });
+    auto [v] = ex::sync_wait(std::move(work)).value();
+    REQUIRE(v == std::monostate{});
+}
+
+TEST_CASE("call_cc_void escape completion", "[callcc][void]") {
+    auto work = smd::call_cc_void([](auto escape) { return escape(); });
+    auto [v] = ex::sync_wait(std::move(work)).value();
+    REQUIRE(v == std::monostate{});
+}
+
+TEST_CASE("call_cc_from deduces ValueType from parameter annotation",
+          "[callcc][deduction]") {
+    auto work = smd::call_cc_from(
+        [](smd::escape_fn<int> escape) { return escape(77); });
+    auto [v] = ex::sync_wait(std::move(work)).value();
+    REQUIRE(v == 77);
+}
+
+TEST_CASE("call_cc_from normal completion", "[callcc][deduction]") {
+    auto work = smd::call_cc_from(
+        [](smd::escape_fn<int> /*escape*/) { return ex::just(10); });
+    auto [v] = ex::sync_wait(std::move(work)).value();
+    REQUIRE(v == 10);
+}

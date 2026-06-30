@@ -12,10 +12,10 @@
 
 #include <atomic>
 #include <exception>
-#include <functional>
 #include <optional>
 #include <type_traits>
 #include <utility>
+#include <variant>
 
 namespace smd {
 
@@ -115,12 +115,73 @@ struct escape_sender {
     auto get_env() const noexcept -> ex::env<> { return {}; }
 };
 
+// ---------------------------------------------------------------------------
+// Value-escape sender — like escape_sender but advertises
+// set_value_t(ValueType) instead of set_stopped_t(). This makes the escape
+// composable in positions that require a value completion (e.g. as a when_all
+// child).
+// ---------------------------------------------------------------------------
+template <class ValueType, class LocalReceiver>
+struct value_escape_op_state {
+    using operation_state_concept = ex::operation_state_tag;
+
+    escape_sink<ValueType> *sink;
+    ValueType value;
+    LocalReceiver local_receiver;
+
+    void start() & noexcept {
+        sink->do_escape(value);
+        ex::set_value(std::move(local_receiver), std::move(value));
+    }
+};
+
+template <class ValueType>
+struct value_escape_sender {
+    using sender_concept = ex::sender_tag;
+
+    escape_sink<ValueType> *sink;
+    ValueType value;
+
+    template <typename, typename... Env>
+    static consteval auto get_completion_signatures() noexcept {
+        return ex::completion_signatures<ex::set_value_t(ValueType)>{};
+    }
+
+    template <ex::receiver LocalReceiver>
+    auto connect(LocalReceiver rcvr)
+        && -> value_escape_op_state<ValueType, LocalReceiver> {
+        return {sink, std::move(value), std::move(rcvr)};
+    }
+
+    auto get_env() const noexcept -> ex::env<> { return {}; }
+};
+
 template <class ValueType>
 struct escape_factory {
     escape_sink<ValueType> *sink;
 
     auto operator()(ValueType val) const -> escape_sender<ValueType> {
         return {sink, std::move(val)};
+    }
+
+    auto value(ValueType val) const -> value_escape_sender<ValueType> {
+        return {sink, std::move(val)};
+    }
+};
+
+// ---------------------------------------------------------------------------
+// void_escape_factory — wraps escape_factory<std::monostate> so that
+// operator() takes no arguments, for use with call_cc_void.
+// ---------------------------------------------------------------------------
+struct void_escape_factory {
+    escape_factory<std::monostate> inner;
+
+    auto operator()() const -> escape_sender<std::monostate> {
+        return inner(std::monostate{});
+    }
+
+    auto value() const -> value_escape_sender<std::monostate> {
+        return inner.value(std::monostate{});
     }
 };
 
@@ -187,6 +248,19 @@ struct inner_receiver {
 };
 
 // ---------------------------------------------------------------------------
+// stop_forwarder — a trivial callable that bridges outer cancellation to the
+// local inplace_stop_source. Replaces std::function<void()> in the stop
+// callback so that zero heap allocation is structurally guaranteed.
+// ---------------------------------------------------------------------------
+template <class SharedStateType>
+struct stop_forwarder {
+    SharedStateType *shared_state;
+    void operator()() const noexcept {
+        shared_state->stop_source.request_stop();
+    }
+};
+
+// ---------------------------------------------------------------------------
 // Outer operation state — weaves the pieces together. Owns the shared state by
 // value (no heap allocation), then connects and starts the user's inner sender.
 //
@@ -208,7 +282,8 @@ struct call_cc_op_state {
     using OuterStopToken = decltype(ex::get_stop_token(
         ex::get_env(std::declval<const OuterReceiver &>())));
     using StopCallback =
-        ex::stop_callback_for_t<OuterStopToken, std::function<void()>>;
+        ex::stop_callback_for_t<OuterStopToken,
+                                stop_forwarder<SharedStateType>>;
 
     SharedStateType shared_state;
     F user_func;
@@ -243,8 +318,8 @@ struct call_cc_op_state {
         // callback fires immediately here.
         auto outer_token =
             ex::get_stop_token(ex::get_env(shared_state.outer_receiver));
-        stop_callback.emplace(
-            outer_token, [this]() { shared_state.stop_source.request_stop(); });
+        stop_callback.emplace(outer_token,
+                              stop_forwarder<SharedStateType>{&shared_state});
 
         escape_factory<ValueType> factory{&shared_state};
         try {
@@ -301,7 +376,48 @@ struct call_cc_sender {
     auto get_env() const noexcept -> ex::env<> { return {}; }
 };
 
+// ---------------------------------------------------------------------------
+// Deduction traits — extract ValueType from a typed escape_factory parameter.
+// Only works for non-generic lambdas (operator() is not a template).
+// ---------------------------------------------------------------------------
+template <class>
+struct extract_escape_value;
+
+template <class V>
+struct extract_escape_value<escape_factory<V>> {
+    using type = V;
+};
+
+template <class V>
+struct extract_escape_value<const escape_factory<V>> {
+    using type = V;
+};
+
+template <class F>
+struct deduce_value_type;
+
+template <class C, class R, class Param>
+struct deduce_value_type<R (C::*)(Param) const> {
+    using type =
+        typename extract_escape_value<std::remove_cvref_t<Param>>::type;
+};
+
+template <class C, class R, class Param>
+struct deduce_value_type<R (C::*)(Param)> {
+    using type =
+        typename extract_escape_value<std::remove_cvref_t<Param>>::type;
+};
+
+template <class F>
+using deduce_value_type_t = typename deduce_value_type<
+    decltype(&std::remove_cvref_t<F>::operator())>::type;
+
 } // namespace callcc_detail
+
+// escape_fn<V> — a public alias for the escape factory, so users can annotate
+// lambda parameters for call_cc_from deduction.
+template <class ValueType>
+using escape_fn = callcc_detail::escape_factory<ValueType>;
 
 // ---------------------------------------------------------------------------
 // call_cc<ValueType>(f) — the sender factory. `f` is invoked with an escape
@@ -312,6 +428,30 @@ struct call_cc_sender {
 template <class ValueType, class F>
 auto call_cc(F func) -> callcc_detail::call_cc_sender<F, ValueType> {
     return {std::move(func)};
+}
+
+// ---------------------------------------------------------------------------
+// call_cc_void(f) — convenience for early-exit with no meaningful value.
+// The escape factory's operator() takes no arguments; the underlying value
+// type is std::monostate.
+// ---------------------------------------------------------------------------
+template <class F>
+auto call_cc_void(F func) {
+    return call_cc<std::monostate>(
+        [f = std::move(func)](
+            callcc_detail::escape_factory<std::monostate> esc) {
+            return f(callcc_detail::void_escape_factory{esc});
+        });
+}
+
+// ---------------------------------------------------------------------------
+// call_cc_from(f) — deduces ValueType from the callable's parameter type.
+// Requires a non-generic lambda with a single escape_fn<V> parameter.
+// ---------------------------------------------------------------------------
+template <class F>
+auto call_cc_from(F func) {
+    using ValueType = callcc_detail::deduce_value_type_t<F>;
+    return call_cc<ValueType>(std::move(func));
 }
 
 } // namespace smd
