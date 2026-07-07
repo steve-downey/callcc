@@ -1,0 +1,4 @@
+var structsmd_1_1callcc__detail_1_1extract__escape__value_3_01const_01escape__factory_3_01V_01_4_01_4 =
+[
+    [ "type", "structsmd_1_1callcc__detail_1_1extract__escape__value_3_01const_01escape__factory_3_01V_01_4_01_4.html#a5063549efd5736c7019ede2c96f63215", null ]
+];
