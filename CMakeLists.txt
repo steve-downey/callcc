@@ -60,7 +60,12 @@ endif()
 add_subdirectory(src)
 
 include(infra/cmake/beman-install-library.cmake)
-beman_install_library(callcc.callcc TARGETS callcc.callcc NAMESPACE smd::)
+beman_install_library(
+    callcc.callcc
+    TARGETS callcc.callcc
+    NAMESPACE smd::
+    DEPENDENCIES beman.execution
+)
 
 # Coverage
 configure_file("cmake/gcovr.cfg.in" gcovr.cfg @ONLY)

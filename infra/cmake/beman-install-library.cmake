@@ -285,7 +285,7 @@ function(beman_install_library name)
         )
         string(APPEND _beman_find_deps "find_dependency(${dep})\n")
     endforeach()
-    set(BEMAN_INSTALL_FIND_DEPENDENCIES "${_beman_find_deps}")
+    set(BEMAN_FIND_DEPENDENCIES "${_beman_find_deps}")
 
     # ----------------------------------------
     # Generate + install config files

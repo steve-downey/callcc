@@ -2,16 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 cmake_minimum_required(VERSION 3.27)
-project(TestInstalledOptional)
+project(TestInstalledCallcc)
 
-set(CMAKE_CXX_STANDARD 20) #current minimum C++ version
+set(CMAKE_CXX_STANDARD 23)
 
 # Enable testing in this separate project
 enable_testing()
 
 # Find the installed package
-set(NAME_INSTALL_DIR "../.install/lib/cmake/callcc.callcc/")
-find_package(callcc.callcc REQUIRED PATHS ${NAME_INSTALL_DIR} NO_DEFAULT_PATH)
+find_package(callcc.callcc REQUIRED)
 
 # Add the test executable
 add_executable(TestInstalledLibrary test.cpp)
