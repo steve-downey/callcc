@@ -16,20 +16,22 @@ if(CALLCC_ENABLE_TESTING)
 
     # Completion-signature template expansion blows up symbol tables; use a
     # high-concurrency linker if one is available.
-    foreach(_fw_linker mold lld)
-        if(NOT _fw_linker_found)
-            find_program(_fw_linker_path NAMES "${_fw_linker}")
-            if(_fw_linker_path)
-                string(TOUPPER "${_fw_linker}" _fw_linker_upper)
-                set_target_properties(
-                    call_cc_test
-                    PROPERTIES LINKER_TYPE "${_fw_linker_upper}"
-                )
-                message(STATUS "call_cc_test: using ${_fw_linker} linker")
-                set(_fw_linker_found TRUE)
+    if(NOT MSVC)
+        foreach(_fw_linker mold lld)
+            if(NOT _fw_linker_found)
+                find_program(_fw_linker_path NAMES "${_fw_linker}")
+                if(_fw_linker_path)
+                    string(TOUPPER "${_fw_linker}" _fw_linker_upper)
+                    set_target_properties(
+                        call_cc_test
+                        PROPERTIES LINKER_TYPE "${_fw_linker_upper}"
+                    )
+                    message(STATUS "call_cc_test: using ${_fw_linker} linker")
+                    set(_fw_linker_found TRUE)
+                endif()
             endif()
-        endif()
-    endforeach()
+        endforeach()
+    endif()
 
     catch_discover_tests(call_cc_test)
 endif()

@@ -10,7 +10,9 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '30 15 * * *'
-permissions: read-all
+permissions:
+  contents: read
+  issues: write
 
 jobs:
   beman-submodule-check:

@@ -26,13 +26,12 @@ int main() {
     // With genuinely asynchronous arms, the stop request would cancel arm B
     // before it finishes.
     auto work = smd::call_cc<int>([&](auto escape) {
-        return ex::when_all(
-                   escape.value(42),
-                   ex::just(99) | ex::then([&](int x) {
-                       arm_b_ran = true;
-                       return x;
-                   }))
-            | ex::then([](int a, int /*b*/) { return a; });
+        return ex::when_all(escape.value(42),
+                            ex::just(99) | ex::then([&](int x) {
+                                arm_b_ran = true;
+                                return x;
+                            })) |
+               ex::then([](int a, int /*b*/) { return a; });
     });
 
     auto [result] = ex::sync_wait(std::move(work)).value();

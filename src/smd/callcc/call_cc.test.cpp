@@ -221,6 +221,13 @@ struct manual_controller {
     bool started{false};
 };
 
+struct sink_rcvr {
+    using receiver_concept = ex::receiver_tag;
+    void set_value(int) && noexcept {}
+    void set_error(std::exception_ptr) && noexcept {}
+    void set_stopped() && noexcept {}
+};
+
 template <class R>
 struct escape_then_wait_op {
     using operation_state_concept = ex::operation_state_tag;
@@ -229,14 +236,6 @@ struct escape_then_wait_op {
     R receiver;
 
     void start() & noexcept {
-        // Fire the escape synchronously: stashes the value + requests stop, and
-        // completes the throwaway receiver with set_stopped.
-        struct sink_rcvr {
-            using receiver_concept = ex::receiver_tag;
-            void set_value(int) && noexcept {}
-            void set_error(std::exception_ptr) && noexcept {}
-            void set_stopped() && noexcept {}
-        };
         auto esc_op = ex::connect(esc(123), sink_rcvr{});
         ex::start(esc_op);
 

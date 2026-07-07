@@ -20,15 +20,14 @@ int main() {
     // call_cc_void: the escape carries no value (monostate). Useful when you
     // only want to short-circuit, not deliver a specific result.
     auto work = smd::call_cc_void([&](auto bail) {
-        return ex::just(std::monostate{})
-             | ex::then([&](std::monostate m) {
+        return ex::just(std::monostate{}) | ex::then([&](std::monostate m) {
                    ++steps_run;
                    return m;
-               })
-             | ex::let_value([bail](std::monostate) {
+               }) |
+               ex::let_value([bail](std::monostate) {
                    return bail(); // escape — no value needed
-               })
-             | ex::then([&](std::monostate m) { // *** skipped ***
+               }) |
+               ex::then([&](std::monostate m) { // *** skipped ***
                    ++steps_run;
                    return m;
                });
